@@ -1,0 +1,16 @@
+{
+  "name": "TubeMusic Player",
+  "short_name": "TubeMusic",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3844/3844724.png",
+      "sizes": "512 x 512",
+      "type": "image/png"
+    }
+  ]
+}
