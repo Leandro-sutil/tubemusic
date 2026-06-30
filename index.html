@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TubeMusic Biblioteca</title>
+    <title>TubeMusic Premium</title>
     <link rel="manifest" href="manifest.json">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -18,9 +18,25 @@
 </head>
 <body class="bg-[#0b0b0b] text-white font-sans min-h-screen flex flex-col justify-between select-none antialiased">
 
-    <header class="p-5 bg-[#0b0b0b] sticky top-0 z-10 border-b border-[#1f1f1f]">
-        <h1 class="text-2xl font-bold tracking-tight">Minha Biblioteca</h1>
-        <p class="text-xs text-gray-400 mt-1">Sua lista de reprodução configurada no código</p>
+    <header class="p-4 bg-[#0b0b0b] sticky top-0 z-10 border-b border-[#1f1f1f]">
+        <div class="flex items-center justify-between mb-3">
+            <h1 class="text-xl font-bold tracking-tight">Minha Biblioteca</h1>
+            <button id="toggle-add-btn" class="bg-[#1db954] text-black font-bold text-xs px-3 py-1.5 rounded-full uppercase tracking-wider">
+                <i class="fas fa-plus mr-1"></i> Nova Música
+            </button>
+        </div>
+
+        <div id="add-music-form" class="hidden space-y-2 mt-3 bg-[#141414] p-3 rounded-xl border border-[#282828]">
+            <input type="text" id="track-title" placeholder="Nome da Música" 
+                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
+            <input type="text" id="track-author" placeholder="Nome do Artista / Canal" 
+                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
+            <input type="text" id="track-url" placeholder="Cole o link do YouTube aqui" 
+                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
+            <button id="save-track-btn" class="w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95">
+                Salvar na Playlist
+            </button>
+        </div>
     </header>
 
     <main class="flex-1 p-4 overflow-y-auto pb-32">
