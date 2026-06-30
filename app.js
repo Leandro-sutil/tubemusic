@@ -1,3 +1,4 @@
+// 1. Carrega a API do Iframe do YouTube
 var tag = document.createElement('script');
 tag.src = "https://www.youtube.com/iframe_api";
 var firstScriptTag = document.getElementsByTagName('script')[0];
@@ -60,11 +61,12 @@ document.getElementById('play-btn').addEventListener('click', () => {
     if (isPlaying) { player.pauseVideo(); } else { player.playVideo(); }
 });
 
-// NOVA BUSCA POR FEED RSS ABERTO (Sem chaves ou cadastros)
+// 2. FUNÇÃO DE BUSCA VIA MÓDULO PÚBLICO (Sem chaves ou proxies)
 async function searchYouTube(query) {
     const container = document.getElementById('results-container');
     container.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mr-2"></i> Buscando músicas...</div>`;
 
+    // Se o usuário colocou um link direto
     if (query.includes('youtube.com/watch?v=') || query.includes('youtu.be/')) {
         let videoId = query.split('v=')[1] || query.split('/').pop();
         if(videoId.includes('&')) videoId = videoId.split('&')[0];
@@ -75,26 +77,26 @@ async function searchYouTube(query) {
     }
 
     try {
-        // Usamos um conversor público de RSS para JSON que quebra o bloqueio de segurança nativamente
-        const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent('https://www.youtube.com/feeds/videos.xml?search_query=' + query)}`;
+        // Importa dinamicamente a biblioteca de busca anônima direto pelo navegador
+        const ytSearch = await import('https://cdn.jsdelivr.net/npm/youtube-search-without-api-key@2.0.7/+esm');
         
-        const response = await fetch(url);
-        const data = await response.json();
+        // Faz a pesquisa direto nos servidores do YouTube mascarando o cabeçalho como busca nativa
+        const results = await ytSearch.default(query);
 
-        if (!data.items || data.items.length === 0) {
-            container.innerHTML = `<div class="text-center py-12 text-gray-500">Nenhuma música encontrada. Tente outro termo.</div>`;
+        if (!results || results.length === 0) {
+            container.innerHTML = `<div class="text-center py-12 text-gray-500">Nenhuma música encontrada. Tente reescrever.</div>`;
             return;
         }
 
         container.innerHTML = ""; // Limpa a tela
         
-        data.items.forEach(item => {
-            // Extrai o ID do vídeo do link do feed (ex: https://www.youtube.com/watch?v=XXXXXX)
-            const videoId = item.link.split('v=')[1];
+        // Exibe os primeiros 15 resultados encontrados
+        results.slice(0, 15).forEach(video => {
+            const videoId = video.id?.videoId || video.id;
             if (!videoId) return;
 
-            const title = item.title;
-            const author = item.author || "YouTube Music";
+            const title = video.title || "Música sem título";
+            const author = video.snippet?.channelTitle || "YouTube Video";
             const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
 
             const div = document.createElement('div');
@@ -118,7 +120,7 @@ async function searchYouTube(query) {
 
     } catch (error) {
         console.error(error);
-        container.innerHTML = `<div class="text-center py-12 text-red-400">Erro temporário na busca. Tente digitar novamente.</div>`;
+        container.innerHTML = `<div class="text-center py-12 text-red-400">Ocorreu um erro ao carregar os resultados. Tente novamente em instantes.</div>`;
     }
 }
 
