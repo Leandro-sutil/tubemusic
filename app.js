@@ -1,4 +1,3 @@
-// 1. Carrega a API do Iframe do YouTube
 var tag = document.createElement('script');
 tag.src = "https://www.youtube.com/iframe_api";
 var firstScriptTag = document.getElementsByTagName('script')[0];
@@ -6,8 +5,11 @@ firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
 let player;
 let isPlaying = false;
-let currentVideoId = "";
+let currentTrackIndex = -1;
 let progressInterval;
+
+// 💾 BANCO DE DADOS LOCAL: Busca as músicas gravadas no celular ou inicia vazio
+let MINHA_PLAYLIST = JSON.parse(localStorage.getItem('tubemusic_playlist')) || [];
 
 function onYouTubeIframeAPIReady() {
     player = new YT.Player('yt-player', {
@@ -17,6 +19,7 @@ function onYouTubeIframeAPIReady() {
         playerVars: { 'playsinline': 1, 'controls': 0, 'disablekb': 1 },
         events: { 'onStateChange': onPlayerStateChange }
     });
+    renderPlaylist();
 }
 
 function onPlayerStateChange(event) {
@@ -30,6 +33,7 @@ function onPlayerStateChange(event) {
         playIcon.className = "fas fa-play text-lg ml-0.5";
         clearInterval(progressInterval);
     }
+    if (event.data == YT.PlayerState.ENDED) { nextTrack(); }
 }
 
 function startProgress() {
@@ -46,92 +50,133 @@ function startProgress() {
     }, 1000);
 }
 
-function playTrack(videoId, title, channel, thumb) {
-    currentVideoId = videoId;
-    document.getElementById('current-title').innerText = title;
-    document.getElementById('current-channel').innerText = channel;
-    document.getElementById('current-thumb').src = thumb;
+function getYouTubeId(url) {
+    let videoId = "";
+    if (url.includes('youtube.com/watch?v=')) {
+        videoId = url.split('v=')[1].split('&')[0];
+    } else if (url.includes('youtu.be/')) {
+        videoId = url.split('/').pop().split('?')[0];
+    }
+    return videoId;
+}
+
+function playTrack(index) {
+    if (index < 0 || index >= MINHA_PLAYLIST.length) return;
+    
+    currentTrackIndex = index;
+    const track = MINHA_PLAYLIST[index];
+    const videoId = getYouTubeId(track.url);
+    const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+
+    document.getElementById('current-title').innerText = track.title;
+    document.getElementById('current-channel').innerText = track.author;
+    document.getElementById('current-thumb').src = thumbUrl;
 
     player.loadVideoById(videoId);
     player.playVideo();
+    renderPlaylist();
 }
 
-document.getElementById('play-btn').addEventListener('click', () => {
-    if (!currentVideoId) return;
-    if (isPlaying) { player.pauseVideo(); } else { player.playVideo(); }
-});
+function nextTrack() {
+    if (MINHA_PLAYLIST.length === 0) return;
+    if (currentTrackIndex < MINHA_PLAYLIST.length - 1) {
+        playTrack(currentTrackIndex + 1);
+    } else {
+        playTrack(0);
+    }
+}
 
-// 2. FUNÇÃO DE BUSCA VIA MÓDULO PÚBLICO (Sem chaves ou proxies)
-async function searchYouTube(query) {
-    const container = document.getElementById('results-container');
-    container.innerHTML = `<div class="text-center py-12 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl mr-2"></i> Buscando músicas...</div>`;
+function prevTrack() {
+    if (currentTrackIndex > 0) playTrack(currentTrackIndex - 1);
+}
 
-    // Se o usuário colocou um link direto
-    if (query.includes('youtube.com/watch?v=') || query.includes('youtu.be/')) {
-        let videoId = query.split('v=')[1] || query.split('/').pop();
-        if(videoId.includes('&')) videoId = videoId.split('&')[0];
-        
-        playTrack(videoId, "Vídeo via Link Direto", "YouTube", `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`);
-        container.innerHTML = `<div class="text-center py-12 text-[#1db954]"><i class="fas fa-check-circle text-2xl mb-2 block"></i> Tocando link direto!</div>`;
+// Renderiza a lista na tela com botão de Deletar
+function renderPlaylist() {
+    const container = document.getElementById('playlist-container');
+    container.innerHTML = "";
+
+    if (MINHA_PLAYLIST.length === 0) {
+        container.innerHTML = `<div class="text-center py-12 text-gray-500 text-sm">Sua biblioteca está vazia.<br>Clique em "+ Nova Música" acima para adicionar.</div>`;
         return;
     }
 
-    try {
-        // Importa dinamicamente a biblioteca de busca anônima direto pelo navegador
-        const ytSearch = await import('https://cdn.jsdelivr.net/npm/youtube-search-without-api-key@2.0.7/+esm');
+    MINHA_PLAYLIST.forEach((track, index) => {
+        const videoId = getYouTubeId(track.url);
+        const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+        const isCurrent = index === currentTrackIndex;
+
+        const div = document.createElement('div');
+        div.className = `flex items-center justify-between p-3 rounded-xl transition shadow-sm ${isCurrent ? 'bg-[#1db954]/20 border border-[#1db954]' : 'bg-[#141414] border border-[#1f1f1f]'}`;
         
-        // Faz a pesquisa direto nos servidores do YouTube mascarando o cabeçalho como busca nativa
-        const results = await ytSearch.default(query);
-
-        if (!results || results.length === 0) {
-            container.innerHTML = `<div class="text-center py-12 text-gray-500">Nenhuma música encontrada. Tente reescrever.</div>`;
-            return;
-        }
-
-        container.innerHTML = ""; // Limpa a tela
-        
-        // Exibe os primeiros 15 resultados encontrados
-        results.slice(0, 15).forEach(video => {
-            const videoId = video.id?.videoId || video.id;
-            if (!videoId) return;
-
-            const title = video.title || "Música sem título";
-            const author = video.snippet?.channelTitle || "YouTube Video";
-            const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-
-            const div = document.createElement('div');
-            div.className = "flex items-center justify-between bg-[#141414] border border-[#1f1f1f] p-3 rounded-xl cursor-pointer hover:bg-[#1c1c1c] active:scale-[0.98] transition shadow-sm";
-            div.onclick = () => playTrack(videoId, title, author, thumbUrl);
-            
-            div.innerHTML = `
-                <div class="flex items-center gap-3 min-w-0 flex-1">
-                    <img src="${thumbUrl}" class="w-14 h-14 rounded-lg object-cover bg-zinc-800">
-                    <div class="min-w-0 flex-1">
-                        <h4 class="text-sm font-medium text-gray-200 truncate pr-2">${title}</h4>
-                        <p class="text-xs text-gray-400 truncate mt-0.5">${author}</p>
-                    </div>
+        div.innerHTML = `
+            <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" onclick="playTrack(${index})">
+                <img src="${thumbUrl}" class="w-14 h-14 rounded-lg object-cover bg-zinc-800">
+                <div class="min-w-0 flex-1">
+                    <h4 class="text-sm font-medium ${isCurrent ? 'text-[#1db954]' : 'text-gray-200'} truncate pr-2">${track.title}</h4>
+                    <p class="text-xs text-gray-400 truncate mt-0.5">${track.author}</p>
                 </div>
-                <div class="bg-white/5 w-8 h-8 rounded-full flex items-center justify-center ml-2 flex-shrink-0">
-                    <i class="fas fa-play text-xs text-gray-300"></i>
-                </div>
-            `;
-            container.appendChild(div);
-        });
-
-    } catch (error) {
-        console.error(error);
-        container.innerHTML = `<div class="text-center py-12 text-red-400">Ocorreu um erro ao carregar os resultados. Tente novamente em instantes.</div>`;
-    }
+            </div>
+            <button onclick="deleteTrack(${index}, event)" class="text-gray-500 hover:text-red-500 p-2 ml-2">
+                <i class="fas fa-trash-alt"></i>
+            </button>
+        `;
+        container.appendChild(div);
+    });
 }
 
-document.getElementById('search-btn').addEventListener('click', () => {
-    const query = document.getElementById('search-input').value;
-    if (query) searchYouTube(query);
+// Função para deletar uma música da memória do celular
+window.deleteTrack = function(index, event) {
+    event.stopPropagation(); // Evita dar play na música ao clicar em deletar
+    MINHA_PLAYLIST.splice(index, 1);
+    localStorage.setItem('tubemusic_playlist', JSON.stringify(MINHA_PLAYLIST));
+    if (index === currentTrackIndex) {
+        player.stopVideo();
+        currentTrackIndex = -1;
+        document.getElementById('current-title').innerText = "Nenhuma música tocando";
+    }
+    renderPlaylist();
+};
+
+// Interface: Mostrar/Esconder o formulário de cadastro
+document.getElementById('toggle-add-btn').addEventListener('click', () => {
+    const form = document.getElementById('add-music-form');
+    form.classList.toggle('hidden');
 });
 
-document.getElementById('search-input').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        const query = document.getElementById('search-input').value;
-        if (query) searchYouTube(query);
+// AÇÃO DE SALVAR A MÚSICA NO BANCO LOCAL
+document.getElementById('save-track-btn').addEventListener('click', () => {
+    const title = document.getElementById('track-title').value.trim();
+    const author = document.getElementById('track-author').value.trim();
+    const url = document.getElementById('track-url').value.trim();
+
+    if (!title || !url) {
+        alert("Por favor, preencha pelo menos o Título e o Link do YouTube.");
+        return;
     }
+
+    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+        alert("Link do YouTube inválido.");
+        return;
+    }
+
+    // Adiciona o objeto na lista
+    MINHA_PLAYLIST.push({ title, author: author || "YouTube", url });
+    
+    // Grava no "Banco de Dados" do celular
+    localStorage.setItem('tubemusic_playlist', JSON.stringify(MINHA_PLAYLIST));
+
+    // Limpa os campos do formulário e esconde ele
+    document.getElementById('track-title').value = "";
+    document.getElementById('track-author').value = "";
+    document.getElementById('track-url').value = "";
+    document.getElementById('add-music-form').classList.add('hidden');
+
+    renderPlaylist();
+});
+
+document.getElementById('next-btn').addEventListener('click', nextTrack);
+document.getElementById('prev-btn').addEventListener('click', prevTrack);
+document.getElementById('play-btn').addEventListener('click', () => {
+    if (currentTrackIndex === -1 && MINHA_PLAYLIST.length > 0) { playTrack(0); return; }
+    if (isPlaying) { player.pauseVideo(); } else { player.playVideo(); }
 });
