@@ -2,52 +2,70 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TubeMusic Player</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TubeMusic Pro</title>
     <link rel="manifest" href="manifest.json">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Efeito de desfoque no player inferior estilo iOS/Spotify */
+        .glass-player {
+            background: rgba(24, 24, 24, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+        /* Remove o scrollbar feio no mobile */
+        ::-webkit-scrollbar { display: none; }
+    </style>
 </head>
-<body class="bg-[#121212] text-white font-sans min-h-screen flex flex-col justify-between select-none">
+<body class="bg-[#0b0b0b] text-white font-sans min-h-screen flex flex-col justify-between select-none antialiased">
 
-    <header class="p-4 bg-[#000000] sticky top-0 z-10">
-        <div class="flex items-center bg-[#242424] px-3 py-2 rounded-full">
-            <i class="fas fa-search text-gray-400 mr-2"></i>
-            <input type="text" id="search-input" placeholder="O que você quer ouvir?"
-                   class="bg-transparent w-full focus:outline-none text-sm text-white">
-            <button id="search-btn" class="text-green-500 font-semibold text-sm px-2">Buscar</button>
+    <header class="p-4 bg-[#0b0b0b]/90 backdrop-blur-md sticky top-0 z-10">
+        <div class="flex items-center bg-[#1f1f1f] px-4 py-3 rounded-full border border-[#2d2d2d] focus-within:border-[#1db954] transition">
+            <i class="fas fa-search text-gray-400 mr-3"></i>
+            <input type="text" id="search-input" placeholder="Artistas, músicas ou vídeos..."
+                   class="bg-transparent w-full focus:outline-none text-base text-white placeholder-gray-500">
+            <button id="search-btn" class="text-[#1db954] font-bold text-sm px-2 tracking-wide uppercase">Buscar</button>
         </div>
     </header>
 
-    <main class="flex-1 p-4 overflow-y-auto mb-24">
-        <h2 class="text-xl font-bold mb-4" id="list-title">Músicas Recomendadas</h2>
-        <div id="results-container" class="space-y-4">
-            <p class="text-gray-400 text-sm">Digite algo na barra de busca para começar...</p>
+    <main class="flex-1 p-4 overflow-y-auto pb-32">
+        <h2 class="text-lg font-bold text-gray-400 mb-4 tracking-tight" id="list-title">Sua Busca</h2>
+
+        <div id="results-container" class="space-y-3">
+            <div class="text-center py-12 text-gray-500">
+                <i class="fas fa-music text-4xl mb-3 block text-gray-600"></i>
+                <p class="text-sm">Busque por qualquer música ou cole o link do YouTube acima.</p>
+            </div>
         </div>
     </main>
 
-    <footer class="fixed bottom-0 left-0 right-0 bg-[#181818] border-t border-[#282828] p-4 flex flex-col gap-2">
-        <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <img id="current-thumb" src="https://via.placeholder.com/50" class="w-12 h-12 rounded object-cover">
-                <div>
-                    <h4 id="current-title" class="text-sm font-semibold truncate w-48">Nenhuma música tocando</h4>
-                    <p id="current-channel" class="text-xs text-gray-400 truncate w-48">-</p>
+    <footer class="fixed bottom-0 left-0 right-0 glass-player border-t border-[#282828]/50 p-4 pb-6 flex flex-col gap-3 z-20 rounded-t-2xl">
+        <div class="flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3 min-w-0">
+                <img id="current-thumb" src="https://via.placeholder.com/150" class="w-12 h-12 rounded-lg object-cover shadow-lg border border-white/5">
+                <div class="min-w-0 flex-1">
+                    <h4 id="current-title" class="text-sm font-medium text-white truncate">Nenhuma música tocando</h4>
+                    <p id="current-channel" class="text-xs text-gray-400 truncate mt-0.5">-</p>
                 </div>
             </div>
-            <button class="text-gray-400 hover:text-white"><i class="far fa-heart"></i></button>
+            <button class="text-gray-400 hover:text-white transition-colors"><i class="far fa-heart text-lg"></i></button>
         </div>
 
-        <div class="flex flex-col items-center gap-1 w-full">
-            <div class="flex items-center gap-6 text-xl">
-                <button class="text-gray-400 hover:text-white text-sm"><i class="fas fa-random"></i></button>
-                <button id="prev-btn" class="text-gray-400 hover:text-white"><i class="fas fa-step-backward"></i></button>
-                <button id="play-btn" class="bg-white text-black w-10 h-10 rounded-full flex items-center justify-center hover:scale-105 transition">
-                    <i class="fas fa-play ml-0.5" id="play-icon"></i>
-                </button>
-                <button id="next-btn" class="text-gray-400 hover:text-white"><i class="fas fa-step-forward"></i></button>
-                <button class="text-gray-400 hover:text-white text-sm"><i class="fas fa-redo"></i></button>
-            </div>
+        <div class="w-full bg-gray-700 h-1 rounded-full overflow-hidden">
+            <div id="progress-bar" class="bg-[#1db954] h-full w-0 transition-all duration-300"></div>
+        </div>
+
+        <div class="flex items-center justify-between px-8 mt-1">
+            <button class="text-gray-500 text-sm"><i class="fas fa-random"></i></button>
+            <button id="prev-btn" class="text-gray-300 text-lg"><i class="fas fa-step-backward"></i></button>
+
+            <button id="play-btn" class="bg-white text-black w-12 h-12 rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform">
+                <i class="fas fa-play text-lg ml-0.5" id="play-icon"></i>
+            </button>
+
+            <button id="next-btn" class="text-gray-300 text-lg"><i class="fas fa-step-forward"></i></button>
+            <button class="text-[#1db954] text-sm"><i class="fas fa-redo"></i></button>
         </div>
     </footer>
 
@@ -55,10 +73,7 @@
 
     <script src="app.js"></script>
     <script>
-        // Registra o Service Worker para virar PWA
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
-        }
+        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
     </script>
 </body>
 </html>
