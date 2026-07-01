@@ -8,7 +8,7 @@ let progressInterval;
 let isUserDragging = false; // Trava o timer automático para não atrapalhar o arrastar da barra
 let currentView = 'tracks'; // 'tracks' ou 'playlists'
 
-// 1. Inicializa o Banco de Dados IndexedDB (Atualizado para versão 2)
+// 1. Inicializa o Banco de Dados IndexedDB (Versão 2)
 const request = indexedDB.open('TubeMusicDB', 2);
 
 request.onupgradeneeded = (e) => {
@@ -30,7 +30,13 @@ request.onsuccess = (e) => {
 
 request.onerror = (e) => console.error("Erro ao abrir IndexedDB", e);
 
+// Caso o navegador bloqueie por causa da mudança de versão, força a recarga
+request.onblocked = () => {
+    alert("Por favor, feche as outras abas deste app ou atualize a página para concluir a atualização do banco de dados.");
+};
+
 function carregarPlaylist() {
+    if (!db) return;
     const transaction = db.transaction(['musicas'], 'readonly');
     const store = transaction.objectStore('musicas');
     const getAll = store.getAll();
@@ -43,6 +49,7 @@ function carregarPlaylist() {
 
 // Carrega as tabelas de Playlists do IndexedDB
 function carregarPlaylistsDB() {
+    if (!db) return;
     const transaction = db.transaction(['playlists'], 'readonly');
     const store = transaction.objectStore('playlists');
     const getAll = store.getAll();
@@ -106,7 +113,7 @@ function renderPlaylist() {
     });
 }
 
-// 3. Mecanismo de Controle de Áudio Local
+// Mecanismo de Controle de Áudio Local
 function playTrack(index) {
     let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
     if (index < 0 || index >= listaAlvo.length) return;
@@ -138,7 +145,7 @@ function playTrack(index) {
             else renderTracksOfPlaylist();
         })
         .catch(err => {
-            console.log("Interação prévia necessária do usuário:", err);
+            console.log("Interação prévia necessária do usuário para disparar o áudio:", err);
         });
 }
 
@@ -181,6 +188,7 @@ function prevTrack() {
 
 window.deleteTrack = function(id, event) {
     event.stopPropagation();
+    if (!db) return;
     const transaction = db.transaction(['musicas'], 'readwrite');
     const store = transaction.objectStore('musicas');
     store.delete(id);
@@ -219,7 +227,6 @@ function promptAdicionarMusicaPlaylist(track) {
     if (escolha !== null && CACHE_PLAYLISTS[escolha]) {
         const targetPlaylist = CACHE_PLAYLISTS[escolha];
         
-        // Evita duplicatas pelo nome do arquivo
         if (targetPlaylist.tracks.some(t => t.name === track.name)) {
             alert("Esta música já está nesta playlist!");
             return;
@@ -330,7 +337,6 @@ function removerMusicaDaPlaylist(index) {
     const transaction = db.transaction(['playlists'], 'readwrite');
     const store = transaction.objectStore('playlists');
     
-    // Procura o objeto completo no cache para persistir a alteração no banco
     const pObj = CACHE_PLAYLISTS.find(p => p.id === playlistAtivaId);
     pObj.tracks = playlistAtivaTracks;
     
@@ -382,6 +388,7 @@ document.getElementById('tab-playlists').addEventListener('click', () => switchT
 document.getElementById('create-playlist-btn').addEventListener('click', () => {
     const nome = prompt("Nome da Nova Playlist:");
     if (nome && nome.trim() !== "") {
+        if (!db) return;
         const transaction = db.transaction(['playlists'], 'readwrite');
         const store = transaction.objectStore('playlists');
         store.add({ nome: nome.trim(), tracks: [] });
@@ -406,6 +413,11 @@ document.getElementById('save-track-btn').addEventListener('click', () => {
         return;
     }
 
+    if (!db) {
+        alert("O banco de dados ainda está inicializando. Por favor, aguarde um segundo e tente novamente.");
+        return;
+    }
+
     const transaction = db.transaction(['musicas'], 'readwrite');
     const store = transaction.objectStore('musicas');
 
@@ -419,6 +431,11 @@ document.getElementById('save-track-btn').addEventListener('click', () => {
         document.getElementById('selected-files-count').innerText = "Nenhum arquivo selecionado";
         document.getElementById('add-music-form').classList.add('hidden');
         carregarPlaylist();
+    };
+    
+    transaction.onerror = (err) => {
+        console.error("Erro na transação de salvamento:", err);
+        alert("Erro ao salvar no banco local.");
     };
 });
 
