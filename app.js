@@ -406,8 +406,12 @@ document.getElementById('audio-files').addEventListener('change', (e) => {
     document.getElementById('selected-files-count').innerText = `${count} arquivo(s) selecionado(s)`;
 });
 
-document.getElementById('save-track-btn').addEventListener('click', () => {
+// NOVO PROCESSAMENTO ASSÍNCRONO EM LOTE (BATCHING) PARA EVITAR TRAVAMENTOS E OUT OF MEMORY
+document.getElementById('save-track-btn').addEventListener('click', async () => {
     const input = document.getElementById('audio-files');
+    const saveBtn = document.getElementById('save-track-btn');
+    const statusText = document.getElementById('selected-files-count');
+    
     if (input.files.length === 0) {
         alert("Por favor, selecione ao menos um arquivo de música do aparelho.");
         return;
@@ -418,25 +422,52 @@ document.getElementById('save-track-btn').addEventListener('click', () => {
         return;
     }
 
-    const transaction = db.transaction(['musicas'], 'readwrite');
-    const store = transaction.objectStore('musicas');
+    // Altera o estado do botão para impedir novos cliques durante o processamento pesado
+    saveBtn.disabled = true;
+    saveBtn.className = "w-full bg-gray-600 text-gray-300 font-bold text-sm py-2 rounded-lg cursor-not-allowed mt-2";
+    
+    const totalArquivos = input.files.length;
+    
+    // Função local para encapsular a transação do IndexedDB como uma Promise controlada
+    const salvarArquivoNoDB = (file) => {
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(['musicas'], 'readwrite');
+            const store = transaction.objectStore('musicas');
+            
+            const request = store.add({ name: file.name, file: file });
+            
+            request.onsuccess = () => resolve();
+            request.onerror = (err) => reject(err);
+        });
+    };
 
-    for (let i = 0; i < input.files.length; i++) {
-        const file = input.files[i];
-        store.add({ name: file.name, file: file });
-    }
+    try {
+        // Percorre a lista sequencialmente, dando fôlego à thread principal e à memória RAM
+        for (let i = 0; i < totalArquivos; i++) {
+            const file = input.files[i];
+            
+            // Atualiza o contador em tempo real na interface
+            statusText.innerText = `Salvando: ${i + 1} de ${totalArquivos} músicas...`;
+            
+            await salvarArquivoNoDB(file);
+        }
 
-    transaction.oncomplete = () => {
+        alert(`${totalArquivos} músicas importadas com sucesso para a biblioteca local!`);
+        
+        // Limpa a fila do input e esconde o menu de upload
         input.value = "";
-        document.getElementById('selected-files-count').innerText = "Nenhum arquivo selecionado";
+        statusText.innerText = "Nenhum arquivo selecionado";
         document.getElementById('add-music-form').classList.add('hidden');
         carregarPlaylist();
-    };
-    
-    transaction.onerror = (err) => {
-        console.error("Erro na transação de salvamento:", err);
-        alert("Erro ao salvar no banco local.");
-    };
+
+    } catch (error) {
+        console.error("Erro durante a importação em lote:", error);
+        alert("Ocorreu um erro ao salvar algumas músicas. Verifique se há espaço disponível.");
+    } finally {
+        // Restaura o botão ao estado padrão clicável
+        saveBtn.disabled = false;
+        saveBtn.className = "w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95 mt-2";
+    }
 });
 
 // Botões de mídia do rodapé
