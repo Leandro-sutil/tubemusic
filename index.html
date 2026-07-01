@@ -27,14 +27,13 @@
         </div>
 
         <div id="add-music-form" class="hidden space-y-2 mt-3 bg-[#141414] p-3 rounded-xl border border-[#282828]">
-            <input type="text" id="track-title" placeholder="Nome da Música" 
-                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
-            <input type="text" id="track-author" placeholder="Nome do Artista / Canal" 
-                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
-            <input type="text" id="track-url" placeholder="Cole o link do YouTube aqui" 
-                   class="bg-[#242424] w-full focus:outline-none text-sm p-2 rounded-lg text-white placeholder-gray-500">
-            <button id="save-track-btn" class="w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95">
-                Salvar na Playlist
+            <label class="block w-full text-center bg-[#242424] hover:bg-[#2a2a2a] text-gray-300 text-sm py-4 px-4 rounded-lg border border-dashed border-gray-600 cursor-pointer transition-colors">
+                <i class="fas fa-cloud-upload-alt mr-2 text-[#1db954] text-lg"></i> Escolher arquivos .opus / .mp3
+                <input type="file" id="audio-files" accept=".opus,.ogg,.mp3" multiple class="hidden">
+            </label>
+            <div id="selected-files-count" class="text-xs text-gray-400 text-center mt-1">Nenhum arquivo selecionado</div>
+            <button id="save-track-btn" class="w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95 mt-2">
+                Salvar na Biblioteca Local
             </button>
         </div>
     </header>
@@ -47,7 +46,9 @@
     <footer class="fixed bottom-0 left-0 right-0 glass-player border-t border-[#282828]/50 p-4 pb-6 flex flex-col gap-3 z-20 rounded-t-2xl">
         <div class="flex items-center justify-between gap-4">
             <div class="flex items-center gap-3 min-w-0 flex-1">
-                <img id="current-thumb" src="https://via.placeholder.com/150" class="w-12 h-12 rounded-lg object-cover shadow-lg border border-white/5">
+                <div id="current-thumb-container" class="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center border border-white/5 shadow-lg">
+                    <i class="fas fa-music text-gray-400 text-lg" id="current-icon"></i>
+                </div>
                 <div class="min-w-0 flex-1">
                     <h4 id="current-title" class="text-sm font-medium text-white truncate">Nenhuma música tocando</h4>
                     <p id="current-channel" class="text-xs text-gray-400 truncate mt-0.5">-</p>
@@ -73,11 +74,13 @@
         </div>
     </footer>
 
-    <div id="yt-player" class="hidden"></div>
-
     <script src="app.js"></script>
     <script>
-        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+        if ('serviceWorker' in navigator) { 
+            navigator.serviceWorker.register('sw.js')
+            .then(() => console.log("Service Worker Registrado com sucesso para rodar Offline!"))
+            .catch(err => console.error("Erro no SW:", err));
+        }
     </script>
 </body>
 </html>
