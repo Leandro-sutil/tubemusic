@@ -7,6 +7,7 @@ let isPlaying = false;
 let progressInterval;
 let isUserDragging = false; // Trava o timer automático para não atrapalhar o arrastar da barra
 let currentView = 'tracks'; // 'tracks' ou 'playlists'
+let isShuffle = false; // Controla se o modo aleatório está ativo
 
 // 1. Inicializa o Banco de Dados IndexedDB (Versão 2)
 const request = indexedDB.open('TubeMusicDB', 2);
@@ -135,6 +136,11 @@ function playTrack(index) {
     if (audioPlayer.src) { URL.revokeObjectURL(audioPlayer.src); } 
     audioPlayer.src = URL.createObjectURL(track.file);
     
+    // Captura os metadados para saber a duração exata da música assim que carregar
+    audioPlayer.onloadedmetadata = () => {
+        document.getElementById('total-duration').innerText = formatTime(audioPlayer.duration);
+    };
+
     audioPlayer.play()
         .then(() => {
             isPlaying = true;
@@ -142,7 +148,7 @@ function playTrack(index) {
             document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
             startProgress();
             if (currentView === 'tracks') renderPlaylist();
-            else renderTracksOfPlaylist();
+            else if (currentView === 'inside_playlist') renderTracksOfPlaylist();
         })
         .catch(err => {
             console.log("Interação prévia necessária do usuário para disparar o áudio:", err);
@@ -151,12 +157,22 @@ function playTrack(index) {
 
 audioPlayer.onended = () => { nextTrack(); };
 
+// Formata segundos em string amigável de minutos (Ex: 3:45)
+function formatTime(seconds) {
+    if (isNaN(seconds)) return "0:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
 function startProgress() {
     clearInterval(progressInterval);
     progressInterval = setInterval(() => {
         if (audioPlayer.duration && !isUserDragging) {
             const percentage = (audioPlayer.currentTime / audioPlayer.duration) * 100;
             document.getElementById('progress-bar').value = percentage;
+            // Atualiza dinamicamente o contador visual de minutos atuais
+            document.getElementById('current-time').innerText = formatTime(audioPlayer.currentTime);
         }
     }, 500);
 }
@@ -168,6 +184,7 @@ progressBar.addEventListener('change', () => {
     if (audioPlayer.duration) {
         const newTime = (progressBar.value / 100) * audioPlayer.duration;
         audioPlayer.currentTime = newTime;
+        document.getElementById('current-time').innerText = formatTime(newTime);
     }
     isUserDragging = false;
 });
@@ -175,10 +192,24 @@ progressBar.addEventListener('change', () => {
 function nextTrack() {
     let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
     if (listaAlvo.length === 0) return;
-    if (currentTrackIndex < listaAlvo.length - 1) {
-        playTrack(currentTrackIndex + 1);
+
+    if (isShuffle) {
+        if (listaAlvo.length === 1) {
+            playTrack(0);
+        } else {
+            let randomIndex;
+            // Evita repetir a música atual se houver mais opções na lista
+            do {
+                randomIndex = Math.floor(Math.random() * listaAlvo.length);
+            } while (randomIndex === currentTrackIndex);
+            playTrack(randomIndex);
+        }
     } else {
-        playTrack(0); 
+        if (currentTrackIndex < listaAlvo.length - 1) {
+            playTrack(currentTrackIndex + 1);
+        } else {
+            playTrack(0); 
+        }
     }
 }
 
@@ -210,6 +241,8 @@ function resetPlayerVisuals() {
     document.getElementById('play-icon').className = "fas fa-play text-lg ml-0.5";
     document.getElementById('current-icon').className = "fas fa-music text-gray-400 text-lg";
     document.getElementById('progress-bar').value = 0;
+    document.getElementById('current-time').innerText = "0:00";
+    document.getElementById('total-duration').innerText = "0:00";
 }
 
 // GERENCIADOR DE PLAYLISTS NO INDEXEDDB
@@ -406,7 +439,7 @@ document.getElementById('audio-files').addEventListener('change', (e) => {
     document.getElementById('selected-files-count').innerText = `${count} arquivo(s) selecionado(s)`;
 });
 
-// NOVO PROCESSAMENTO ASSÍNCRONO EM LOTE (BATCHING) PARA EVITAR TRAVAMENTOS E OUT OF MEMORY
+// PROCESSAMENTO ASSÍNCRONO EM LOTE (BATCHING)
 document.getElementById('save-track-btn').addEventListener('click', async () => {
     const input = document.getElementById('audio-files');
     const saveBtn = document.getElementById('save-track-btn');
@@ -422,13 +455,11 @@ document.getElementById('save-track-btn').addEventListener('click', async () => 
         return;
     }
 
-    // Altera o estado do botão para impedir novos cliques durante o processamento pesado
     saveBtn.disabled = true;
     saveBtn.className = "w-full bg-gray-600 text-gray-300 font-bold text-sm py-2 rounded-lg cursor-not-allowed mt-2";
     
     const totalArquivos = input.files.length;
     
-    // Função local para encapsular a transação do IndexedDB como uma Promise controlada
     const salvarArquivoNoDB = (file) => {
         return new Promise((resolve, reject) => {
             const transaction = db.transaction(['musicas'], 'readwrite');
@@ -442,19 +473,14 @@ document.getElementById('save-track-btn').addEventListener('click', async () => 
     };
 
     try {
-        // Percorre a lista sequencialmente, dando fôlego à thread principal e à memória RAM
         for (let i = 0; i < totalArquivos; i++) {
             const file = input.files[i];
-            
-            // Atualiza o contador em tempo real na interface
             statusText.innerText = `Salvando: ${i + 1} de ${totalArquivos} músicas...`;
-            
             await salvarArquivoNoDB(file);
         }
 
         alert(`${totalArquivos} músicas importadas com sucesso para a biblioteca local!`);
         
-        // Limpa a fila do input e esconde o menu de upload
         input.value = "";
         statusText.innerText = "Nenhum arquivo selecionado";
         document.getElementById('add-music-form').classList.add('hidden');
@@ -464,7 +490,6 @@ document.getElementById('save-track-btn').addEventListener('click', async () => 
         console.error("Erro durante a importação em lote:", error);
         alert("Ocorreu um erro ao salvar algumas músicas. Verifique se há espaço disponível.");
     } finally {
-        // Restaura o botão ao estado padrão clicável
         saveBtn.disabled = false;
         saveBtn.className = "w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95 mt-2";
     }
@@ -473,6 +498,18 @@ document.getElementById('save-track-btn').addEventListener('click', async () => 
 // Botões de mídia do rodapé
 document.getElementById('next-btn').addEventListener('click', nextTrack);
 document.getElementById('prev-btn').addEventListener('click', prevTrack);
+
+// Alternador do modo aleatório (Shuffle)
+document.getElementById('shuffle-btn').addEventListener('click', () => {
+    isShuffle = !isShuffle;
+    const shuffleBtn = document.getElementById('shuffle-btn');
+    if (isShuffle) {
+        shuffleBtn.className = "text-[#1db954] text-sm transition-colors"; // Ativo (Verde)
+    } else {
+        shuffleBtn.className = "text-gray-500 text-sm transition-colors"; // Inativo (Cinza)
+    }
+});
+
 document.getElementById('play-btn').addEventListener('click', () => {
     let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
     if (currentTrackIndex === -1 && listaAlvo.length > 0) { playTrack(0); return; }
