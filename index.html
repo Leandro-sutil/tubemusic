@@ -42,7 +42,6 @@
             </div>
         </div>
 
-        <!-- Abas para alternar visualizações -->
         <div class="flex gap-4 text-sm font-medium border-b border-zinc-800 pb-1">
             <button id="tab-tracks" class="text-[#1db954] border-b-2 border-[#1db954] pb-1 px-1">Músicas</button>
             <button id="tab-playlists" class="text-gray-400 pb-1 px-1 hover:text-white">Playlists</button>
@@ -78,14 +77,15 @@
             <button class="text-gray-400 hover:text-white transition-colors"><i class="far fa-heart text-lg"></i></button>
         </div>
 
-        <!-- Modificado de div para input range para permitir o controle de tempo -->
-        <div class="w-full relative flex items-center">
+        <div class="w-full flex items-center gap-2 text-xs text-gray-400 select-none">
+            <span id="current-time">0:00</span>
             <input type="range" id="progress-bar" min="0" value="0" max="100" 
-                   class="w-full h-1 bg-gray-700 rounded-full appearance-none outline-none accent-[#1db954] cursor-pointer">
+                   class="flex-1 h-1 bg-gray-700 rounded-full appearance-none outline-none accent-[#1db954] cursor-pointer">
+            <span id="total-duration">0:00</span>
         </div>
 
         <div class="flex items-center justify-between px-8 mt-1">
-            <button class="text-gray-500 text-sm"><i class="fas fa-random"></i></button>
+            <button id="shuffle-btn" class="text-gray-500 text-sm transition-colors"><i class="fas fa-random"></i></button>
             <button id="prev-btn" class="text-gray-300 text-lg"><i class="fas fa-step-backward"></i></button>
             
             <button id="play-btn" class="bg-white text-black w-12 h-12 rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform">
