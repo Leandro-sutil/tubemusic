@@ -9,6 +9,11 @@ let isUserDragging = false; // Trava o timer automático para não atrapalhar o 
 let currentView = 'tracks'; // 'tracks' ou 'playlists'
 let isShuffle = false; // Controla se o modo aleatório está ativo
 
+// --- Persistência de estado (lembrar última música e ponto de reprodução) ---
+const STORAGE_KEY = 'tubemusic_ultimo_estado';
+let stateRestaurado = false;
+let progressTickCount = 0;
+
 // 1. Inicializa o Banco de Dados IndexedDB (Versão 2)
 const request = indexedDB.open('TubeMusicDB', 2);
 
@@ -45,6 +50,7 @@ function carregarPlaylist() {
     getAll.onsuccess = () => {
         MINHA_PLAYLIST = getAll.result;
         if (currentView === 'tracks') renderPlaylist();
+        tentarRestaurarEstado();
     };
 }
 
@@ -147,15 +153,43 @@ function playTrack(index) {
             document.getElementById('play-icon').className = "fas fa-pause text-lg";
             document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
             startProgress();
+            atualizarMediaSession(titulo, artista);
             if (currentView === 'tracks') renderPlaylist();
             else if (currentView === 'inside_playlist') renderTracksOfPlaylist();
         })
         .catch(err => {
             console.log("Interação prévia necessária do usuário para disparar o áudio:", err);
         });
+
+    salvarEstadoAtual();
 }
 
 audioPlayer.onended = () => { nextTrack(); };
+
+// Sem isso, o navegador pode encerrar o áudio quando a tela bloqueia ou o
+// app vai para segundo plano, o que fazia a reprodução "parar sozinha"
+// depois de algumas músicas.
+audioPlayer.onerror = () => {
+    console.warn("Falha ao carregar/reproduzir a faixa atual, pulando para a próxima.", audioPlayer.error);
+    setTimeout(() => { nextTrack(); }, 400);
+};
+
+function atualizarMediaSession(titulo, artista) {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: titulo,
+        artist: artista,
+        album: 'TubeMusic Premium'
+    });
+    navigator.mediaSession.playbackState = 'playing';
+}
+
+if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', () => document.getElementById('play-btn').click());
+    navigator.mediaSession.setActionHandler('pause', () => document.getElementById('play-btn').click());
+    navigator.mediaSession.setActionHandler('previoustrack', () => prevTrack());
+    navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+}
 
 // Formata segundos em string amigável de minutos (Ex: 3:45)
 function formatTime(seconds) {
@@ -167,6 +201,7 @@ function formatTime(seconds) {
 
 function startProgress() {
     clearInterval(progressInterval);
+    progressTickCount = 0;
     progressInterval = setInterval(() => {
         if (audioPlayer.duration && !isUserDragging) {
             const percentage = (audioPlayer.currentTime / audioPlayer.duration) * 100;
@@ -174,8 +209,102 @@ function startProgress() {
             // Atualiza dinamicamente o contador visual de minutos atuais
             document.getElementById('current-time').innerText = formatTime(audioPlayer.currentTime);
         }
+        // Salva o progresso a cada ~2 segundos, sem sobrecarregar o localStorage
+        progressTickCount++;
+        if (progressTickCount % 4 === 0) salvarEstadoAtual();
     }, 500);
 }
+
+// Guarda a faixa atual e o ponto exato onde parou, para retomar depois de fechar o app
+function salvarEstadoAtual() {
+    if (currentTrackIndex === -1) return;
+    const listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
+    const track = listaAlvo[currentTrackIndex];
+    if (!track) return;
+
+    const estado = {
+        view: currentView,
+        trackId: track.id,
+        time: audioPlayer.currentTime || 0,
+        playlistId: currentView === 'inside_playlist' ? playlistAtivaId : null
+    };
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(estado));
+    } catch (e) {
+        console.warn("Não foi possível salvar o estado de reprodução:", e);
+    }
+}
+
+// Carrega a faixa salva na tela (sem tocar automaticamente, pois os navegadores
+// bloqueiam autoplay sem uma interação prévia do usuário) e posiciona no tempo salvo
+function carregarFaixaParaRestaurar(index, listaAlvo, view, tempoSalvo) {
+    if (index < 0 || index >= listaAlvo.length) return;
+    currentView = view;
+    currentTrackIndex = index;
+    const track = listaAlvo[index];
+
+    let artista = "Desconhecido";
+    let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
+    if (titulo.includes(' - ')) {
+        const partes = titulo.split(' - ');
+        artista = partes[0];
+        titulo = partes.slice(1).join(' - ');
+    }
+
+    document.getElementById('current-title').innerText = titulo;
+    document.getElementById('current-channel').innerText = artista;
+
+    if (audioPlayer.src) { URL.revokeObjectURL(audioPlayer.src); }
+    audioPlayer.src = URL.createObjectURL(track.file);
+
+    audioPlayer.onloadedmetadata = () => {
+        document.getElementById('total-duration').innerText = formatTime(audioPlayer.duration);
+        if (tempoSalvo && tempoSalvo < audioPlayer.duration) {
+            audioPlayer.currentTime = tempoSalvo;
+            document.getElementById('current-time').innerText = formatTime(tempoSalvo);
+            document.getElementById('progress-bar').value = (tempoSalvo / audioPlayer.duration) * 100;
+        }
+    };
+
+    atualizarMediaSession(titulo, artista);
+    navigator.mediaSession && (navigator.mediaSession.playbackState = 'paused');
+
+    if (view === 'tracks') renderPlaylist();
+}
+
+// Tenta restaurar a última música tocada assim que a biblioteca carrega
+function tentarRestaurarEstado() {
+    if (stateRestaurado || !db) return;
+    stateRestaurado = true;
+
+    let estadoSalvo;
+    try {
+        estadoSalvo = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    } catch (e) {
+        estadoSalvo = null;
+    }
+    if (!estadoSalvo || !estadoSalvo.trackId) return;
+
+    if (estadoSalvo.view === 'tracks') {
+        const idx = MINHA_PLAYLIST.findIndex(t => t.id === estadoSalvo.trackId);
+        if (idx !== -1) carregarFaixaParaRestaurar(idx, MINHA_PLAYLIST, 'tracks', estadoSalvo.time);
+    } else if (estadoSalvo.view === 'inside_playlist' && estadoSalvo.playlistId != null) {
+        const transaction = db.transaction(['playlists'], 'readonly');
+        const store = transaction.objectStore('playlists');
+        const getReq = store.get(estadoSalvo.playlistId);
+        getReq.onsuccess = () => {
+            const playlist = getReq.result;
+            if (!playlist) return;
+            playlistAtivaId = playlist.id;
+            playlistAtivaTracks = playlist.tracks;
+            const idx = playlistAtivaTracks.findIndex(t => t.id === estadoSalvo.trackId);
+            if (idx !== -1) carregarFaixaParaRestaurar(idx, playlistAtivaTracks, 'inside_playlist', estadoSalvo.time);
+        };
+    }
+}
+
+window.addEventListener('beforeunload', salvarEstadoAtual);
+audioPlayer.addEventListener('pause', salvarEstadoAtual);
 
 // Lógica da Barra de Progresso clicável/arrastável (Seek)
 const progressBar = document.getElementById('progress-bar');
