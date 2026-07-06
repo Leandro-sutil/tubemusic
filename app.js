@@ -349,17 +349,49 @@ function prevTrack() {
 window.deleteTrack = function(id, event) {
     event.stopPropagation();
     if (!db) return;
+
+    const confirmado = confirm("Deseja realmente excluir esta música? Ela será apagada da biblioteca e de todas as playlists onde estiver.");
+    if (!confirmado) return;
+
     const transaction = db.transaction(['musicas'], 'readwrite');
     const store = transaction.objectStore('musicas');
     store.delete(id);
 
     transaction.oncomplete = () => {
-        if (currentTrackIndex !== -1 && currentView === 'tracks' && MINHA_PLAYLIST[currentTrackIndex].id === id) {
+        if (currentTrackIndex !== -1 && currentView === 'tracks' && MINHA_PLAYLIST[currentTrackIndex] && MINHA_PLAYLIST[currentTrackIndex].id === id) {
             resetPlayerVisuals();
         }
+        // Remove também qualquer cópia dessa música guardada dentro de playlists,
+        // para não deixar dados órfãos ocupando espaço.
+        removerMusicaDeTodasPlaylists(id);
         carregarPlaylist();
     };
 };
+
+// Percorre todas as playlists salvas e remove a faixa com o id informado,
+// já que cada playlist guarda sua própria cópia da música.
+function removerMusicaDeTodasPlaylists(trackId) {
+    if (!db) return;
+    const transaction = db.transaction(['playlists'], 'readwrite');
+    const store = transaction.objectStore('playlists');
+    const getAll = store.getAll();
+
+    getAll.onsuccess = () => {
+        const playlists = getAll.result || [];
+        playlists.forEach((playlist) => {
+            const tamanhoOriginal = playlist.tracks.length;
+            playlist.tracks = playlist.tracks.filter((t) => t.id !== trackId);
+            if (playlist.tracks.length !== tamanhoOriginal) {
+                store.put(playlist);
+                if (playlistAtivaId === playlist.id) playlistAtivaTracks = playlist.tracks;
+            }
+        });
+        transaction.oncomplete = () => {
+            carregarPlaylistsDB();
+            if (currentView === 'inside_playlist') renderTracksOfPlaylist();
+        };
+    };
+}
 
 function resetPlayerVisuals() {
     audioPlayer.pause();
@@ -495,6 +527,9 @@ function renderTracksOfPlaylist() {
 }
 
 function removerMusicaDaPlaylist(index) {
+    const confirmado = confirm("Remover esta música da playlist? Ela continuará na sua biblioteca principal.");
+    if (!confirmado) return;
+
     playlistAtivaTracks.splice(index, 1);
     const transaction = db.transaction(['playlists'], 'readwrite');
     const store = transaction.objectStore('playlists');
