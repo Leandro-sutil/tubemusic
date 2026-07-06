@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tubemusic-v1';
+const CACHE_NAME = 'tubemusic-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -19,6 +19,15 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
+  // Remove caches de versões antigas para não acumular lixo e garantir
+  // que os arquivos atualizados sejam sempre usados
+  e.waitUntil(
+    caches.keys().then((nomes) => {
+      return Promise.all(
+        nomes.filter((nome) => nome !== CACHE_NAME).map((nome) => caches.delete(nome))
+      );
+    })
+  );
   e.clients.claim();
 });
 
