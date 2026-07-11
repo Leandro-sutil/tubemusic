@@ -8,6 +8,8 @@ let progressInterval;
 let isUserDragging = false; // Trava o timer automático para não atrapalhar o arrastar da barra
 let currentView = 'tracks'; // 'tracks' ou 'playlists'
 let isShuffle = false; // Controla se o modo aleatório está ativo
+let historyStack = []; // Guarda o histórico real de reprodução (para o botão "anterior" nunca ser aleatório)
+let searchQuery = ''; // Termo de busca atual digitado pelo usuário
 
 // --- Persistência de estado (lembrar última música e ponto de reprodução) ---
 const STORAGE_KEY = 'tubemusic_ultimo_estado';
@@ -48,7 +50,7 @@ function carregarPlaylist() {
     const getAll = store.getAll();
 
     getAll.onsuccess = () => {
-        MINHA_PLAYLIST = getAll.result;
+        MINHA_PLAYLIST = ordenarPorTitulo(getAll.result);
         if (currentView === 'tracks') renderPlaylist();
         tentarRestaurarEstado();
     };
@@ -67,6 +69,27 @@ function carregarPlaylistsDB() {
     };
 }
 
+// Extrai artista/título de uma faixa a partir do nome do arquivo (lógica centralizada)
+function parseTrackInfo(track) {
+    let artista = "Desconhecido";
+    let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
+    if (titulo.includes(' - ')) {
+        const partes = titulo.split(' - ');
+        artista = partes[0];
+        titulo = partes.slice(1).join(' - ');
+    }
+    return { artista, titulo };
+}
+
+// Ordena uma lista de faixas em ordem alfabética pelo título (ignorando acentos/maiúsculas)
+function ordenarPorTitulo(lista) {
+    return [...lista].sort((a, b) => {
+        const tituloA = parseTrackInfo(a).titulo;
+        const tituloB = parseTrackInfo(b).titulo;
+        return tituloA.localeCompare(tituloB, 'pt-BR', { sensitivity: 'base' });
+    });
+}
+
 function renderPlaylist() {
     const container = document.getElementById('playlist-container');
     container.innerHTML = "";
@@ -80,18 +103,30 @@ function renderPlaylist() {
         return;
     }
 
-    MINHA_PLAYLIST.forEach((track, index) => {
+    const query = searchQuery.trim().toLowerCase();
+    let itensParaExibir = MINHA_PLAYLIST.map((track, index) => ({ track, index }));
+
+    if (query) {
+        itensParaExibir = itensParaExibir.filter(({ track }) => {
+            const { artista, titulo } = parseTrackInfo(track);
+            return titulo.toLowerCase().includes(query) || artista.toLowerCase().includes(query);
+        });
+    }
+
+    if (itensParaExibir.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-12 text-gray-500 text-sm">
+                Nenhuma música encontrada para "${searchQuery}".
+            </div>`;
+        return;
+    }
+
+    itensParaExibir.forEach(({ track, index }) => {
         const isCurrent = index === currentTrackIndex && currentView === 'tracks';
         const div = document.createElement('div');
         div.className = `flex items-center justify-between p-3 rounded-xl transition shadow-sm ${isCurrent ? 'bg-[#1db954]/20 border border-[#1db954]' : 'bg-[#141414] border border-[#1f1f1f]'}`;
         
-        let artista = "Desconhecido";
-        let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
-        if (titulo.includes(' - ')) {
-            const partes = titulo.split(' - ');
-            artista = partes[0];
-            titulo = partes.slice(1).join(' - ');
-        }
+        const { artista, titulo } = parseTrackInfo(track);
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="track-click-${index}">
@@ -121,20 +156,21 @@ function renderPlaylist() {
 }
 
 // Mecanismo de Controle de Áudio Local
-function playTrack(index) {
+// options.isBack = true indica navegação pelo botão "anterior": nunca aleatória,
+// e não deve empilhar mais um item no histórico de reprodução.
+function playTrack(index, options = {}) {
+    const { isBack = false } = options;
     let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
     if (index < 0 || index >= listaAlvo.length) return;
-    
+
+    if (!isBack && currentTrackIndex !== -1 && currentTrackIndex !== index) {
+        historyStack.push(currentTrackIndex);
+    }
+
     currentTrackIndex = index;
     const track = listaAlvo[index];
 
-    let artista = "Desconhecido";
-    let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
-    if (titulo.includes(' - ')) {
-        const partes = titulo.split(' - ');
-        artista = partes[0];
-        titulo = partes.slice(1).join(' - ');
-    }
+    const { artista, titulo } = parseTrackInfo(track);
 
     document.getElementById('current-title').innerText = titulo;
     document.getElementById('current-channel').innerText = artista;
@@ -243,13 +279,7 @@ function carregarFaixaParaRestaurar(index, listaAlvo, view, tempoSalvo) {
     currentTrackIndex = index;
     const track = listaAlvo[index];
 
-    let artista = "Desconhecido";
-    let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
-    if (titulo.includes(' - ')) {
-        const partes = titulo.split(' - ');
-        artista = partes[0];
-        titulo = partes.slice(1).join(' - ');
-    }
+    const { artista, titulo } = parseTrackInfo(track);
 
     document.getElementById('current-title').innerText = titulo;
     document.getElementById('current-channel').innerText = artista;
@@ -318,6 +348,10 @@ progressBar.addEventListener('change', () => {
     isUserDragging = false;
 });
 
+// Avança a música: se o modo aleatório estiver ativo, escolhe uma faixa aleatória
+// (isso acontece tanto ao clicar em "próxima" quanto quando a música termina sozinha).
+// A faixa atual sempre é empilhada no histórico antes de avançar, para que o botão
+// "anterior" consiga voltar exatamente para onde o usuário estava.
 function nextTrack() {
     let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
     if (listaAlvo.length === 0) return;
@@ -342,8 +376,21 @@ function nextTrack() {
     }
 }
 
+// Volta para a música anterior. Nunca é aleatória: usa o histórico real de
+// reprodução (o que realmente tocou antes), e só cai para "índice - 1" se
+// não houver histórico registrado (ex: logo após restaurar o estado salvo).
 function prevTrack() {
-    if (currentTrackIndex > 0) playTrack(currentTrackIndex - 1);
+    let listaAlvo = currentView === 'tracks' ? MINHA_PLAYLIST : playlistAtivaTracks;
+
+    if (historyStack.length > 0) {
+        const indiceAnterior = historyStack.pop();
+        if (indiceAnterior >= 0 && indiceAnterior < listaAlvo.length) {
+            playTrack(indiceAnterior, { isBack: true });
+            return;
+        }
+    }
+
+    if (currentTrackIndex > 0) playTrack(currentTrackIndex - 1, { isBack: true });
 }
 
 window.deleteTrack = function(id, event) {
@@ -475,9 +522,11 @@ function renderPlaylistsView() {
 
 function abrirPlaylist(playlist) {
     playlistAtivaId = playlist.id;
-    playlistAtivaTracks = playlist.tracks;
+    playlistAtivaTracks = ordenarPorTitulo(playlist.tracks);
     currentView = 'inside_playlist';
+    historyStack = []; // Histórico é por contexto de lista, então reinicia ao trocar de lista
     document.getElementById('header-title').innerText = playlist.nome;
+    mostrarOuEsconderBusca(true);
     renderTracksOfPlaylist();
 }
 
@@ -494,18 +543,27 @@ function renderTracksOfPlaylist() {
         return;
     }
 
-    playlistAtivaTracks.forEach((track, index) => {
+    const query = searchQuery.trim().toLowerCase();
+    let itensParaExibir = playlistAtivaTracks.map((track, index) => ({ track, index }));
+
+    if (query) {
+        itensParaExibir = itensParaExibir.filter(({ track }) => {
+            const { artista, titulo } = parseTrackInfo(track);
+            return titulo.toLowerCase().includes(query) || artista.toLowerCase().includes(query);
+        });
+    }
+
+    if (itensParaExibir.length === 0) {
+        container.innerHTML += `<p class="text-zinc-500 text-sm text-center py-8">Nenhuma música encontrada para "${searchQuery}".</p>`;
+        return;
+    }
+
+    itensParaExibir.forEach(({ track, index }) => {
         const isCurrent = index === currentTrackIndex && currentView === 'inside_playlist';
         const div = document.createElement('div');
         div.className = `flex items-center justify-between p-3 rounded-xl transition ${isCurrent ? 'bg-[#1db954]/20 border border-[#1db954]' : 'bg-[#141414] border border-[#1f1f1f]'}`;
         
-        let artista = "Desconhecido";
-        let titulo = track.name.replace('.opus', '').replace('.ogg', '').replace('.mp3', '');
-        if (titulo.includes(' - ')) {
-            const partes = titulo.split(' - ');
-            artista = partes[0];
-            titulo = partes.slice(1).join(' - ');
-        }
+        const { artista, titulo } = parseTrackInfo(track);
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="p-track-${index}">
@@ -553,9 +611,21 @@ function deletarPlaylistAbsoluto(id) {
     }
 }
 
+// Mostra/esconde a caixa de busca (só faz sentido quando há uma lista de músicas visível)
+function mostrarOuEsconderBusca(mostrar) {
+    const searchContainer = document.getElementById('search-container');
+    if (!searchContainer) return;
+    searchContainer.classList.toggle('hidden', !mostrar);
+}
+
 // GERENCIADOR DE ABAS DA INTERFACE
 window.switchTab = function(tab) {
     currentView = tab;
+    historyStack = []; // O histórico de "anterior" é por contexto de lista, então reinicia ao trocar de aba
+    searchQuery = '';
+    const searchInput = document.getElementById('search-input');
+    if (searchInput) searchInput.value = '';
+
     const tabTracks = document.getElementById('tab-tracks');
     const tabPlaylists = document.getElementById('tab-playlists');
     const createBtn = document.getElementById('create-playlist-btn');
@@ -567,6 +637,7 @@ window.switchTab = function(tab) {
         document.getElementById('header-title').innerText = "Minha Biblioteca";
         createBtn.classList.add('hidden');
         addMusicBtn.classList.remove('hidden');
+        mostrarOuEsconderBusca(true);
         renderPlaylist();
     } else {
         tabPlaylists.className = "text-[#1db954] border-b-2 border-[#1db954] pb-1 px-1";
@@ -575,6 +646,7 @@ window.switchTab = function(tab) {
         createBtn.classList.remove('hidden');
         addMusicBtn.classList.add('hidden');
         document.getElementById('add-music-form').classList.add('hidden');
+        mostrarOuEsconderBusca(false);
         renderPlaylistsView();
     }
 };
@@ -658,6 +730,16 @@ document.getElementById('save-track-btn').addEventListener('click', async () => 
         saveBtn.className = "w-full bg-white text-black font-bold text-sm py-2 rounded-lg transition active:scale-95 mt-2";
     }
 });
+
+// Campo de busca: filtra a lista visível (biblioteca ou playlist aberta) em tempo real
+const searchInputEl = document.getElementById('search-input');
+if (searchInputEl) {
+    searchInputEl.addEventListener('input', (e) => {
+        searchQuery = e.target.value;
+        if (currentView === 'tracks') renderPlaylist();
+        else if (currentView === 'inside_playlist') renderTracksOfPlaylist();
+    });
+}
 
 // Botões de mídia do rodapé
 document.getElementById('next-btn').addEventListener('click', nextTrack);
