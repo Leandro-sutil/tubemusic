@@ -53,6 +53,7 @@ function carregarPlaylist() {
         MINHA_PLAYLIST = ordenarPorTitulo(getAll.result);
         if (currentView === 'tracks') renderPlaylist();
         tentarRestaurarEstado();
+        buscarCapasFaltantes();
     };
 }
 
@@ -88,6 +89,127 @@ function ordenarPorTitulo(lista) {
         const tituloB = parseTrackInfo(b).titulo;
         return tituloA.localeCompare(tituloB, 'pt-BR', { sensitivity: 'base' });
     });
+}
+
+// --- CAPAS DE ÁLBUM (identificação automática via API pública do iTunes) ---
+// A API do iTunes não exige chave e é gratuita para uso como este.
+// Ela funciona melhor quando o arquivo segue o padrão "Artista - Título.mp3".
+async function buscarCapaNaAPI(artista, titulo) {
+    const tentativas = [];
+    if (artista && artista !== 'Desconhecido') tentativas.push(`${artista} ${titulo}`);
+    tentativas.push(titulo);
+
+    for (const termo of tentativas) {
+        try {
+            const url = `https://itunes.apple.com/search?term=${encodeURIComponent(termo)}&media=music&entity=song&limit=1`;
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            const data = await resp.json();
+            if (data.results && data.results.length > 0 && data.results[0].artworkUrl100) {
+                // A API devolve uma miniatura pequena (100x100); trocamos para uma versão maior
+                return data.results[0].artworkUrl100.replace('100x100bb', '600x600bb');
+            }
+        } catch (e) {
+            console.warn('Falha ao consultar a API do iTunes para capa:', e);
+        }
+    }
+    return null;
+}
+
+// Baixa os bytes da imagem e converte para base64 (data URL), para guardar a
+// capa dentro do IndexedDB e o app conseguir mostrá-la mesmo offline depois.
+async function baixarCapaComoDataUrl(artworkUrl) {
+    try {
+        const resp = await fetch(artworkUrl);
+        if (!resp.ok) return null;
+        const blob = await resp.blob();
+        return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) {
+        // Se a CDN de imagens não permitir baixar os bytes (CORS), ainda
+        // conseguimos mostrar a capa via URL direta quando estiver online.
+        console.warn('Não foi possível baixar os bytes da capa (a exibição online ainda deve funcionar):', e);
+        return null;
+    }
+}
+
+let buscandoCapas = false;
+function atualizarBotaoCapas(carregando) {
+    const btn = document.getElementById('refresh-covers-btn');
+    if (!btn) return;
+    btn.querySelector('i').className = carregando ? 'fas fa-spinner fa-spin' : 'fas fa-image';
+    btn.disabled = carregando;
+}
+
+// Processa, uma de cada vez (com pequena pausa entre elas), as músicas que
+// ainda não têm capa identificada. forcar=true também tenta de novo as que
+// falharam antes (útil para tentar novamente depois de ficar online).
+async function buscarCapasFaltantes(forcar = false) {
+    if (buscandoCapas || !db) return;
+    buscandoCapas = true;
+    atualizarBotaoCapas(true);
+
+    const faltando = MINHA_PLAYLIST.filter(t => forcar ? (!t.capaDataUrl && !t.capaUrlOnline) : !t.capaTentada);
+
+    for (const track of faltando) {
+        const { artista, titulo } = parseTrackInfo(track);
+        const artworkUrl = await buscarCapaNaAPI(artista, titulo);
+        let capaDataUrl = null;
+        if (artworkUrl) capaDataUrl = await baixarCapaComoDataUrl(artworkUrl);
+
+        const atualizado = {
+            ...track,
+            capaTentada: true,
+            capaDataUrl: capaDataUrl || (forcar ? track.capaDataUrl : null) || null,
+            capaUrlOnline: capaDataUrl ? null : (artworkUrl || track.capaUrlOnline || null)
+        };
+
+        await new Promise((resolve) => {
+            const transaction = db.transaction(['musicas'], 'readwrite');
+            transaction.objectStore('musicas').put(atualizado);
+            transaction.oncomplete = resolve;
+            transaction.onerror = resolve;
+        });
+
+        const idx = MINHA_PLAYLIST.findIndex(t => t.id === track.id);
+        if (idx !== -1) MINHA_PLAYLIST[idx] = atualizado;
+        if (currentTrackIndex === idx) atualizarCapaRodape(atualizado);
+        if (currentView === 'tracks') renderPlaylist();
+
+        await new Promise(r => setTimeout(r, 300)); // evita bater na API rápido demais
+    }
+
+    buscandoCapas = false;
+    atualizarBotaoCapas(false);
+}
+
+// Gera o HTML da miniatura (capa se existir, ou o ícone padrão de nota musical)
+function renderCapaHtml(track, tamanhoClasses, iconeClasses) {
+    const src = track.capaDataUrl || track.capaUrlOnline;
+    if (src) {
+        return `<div class="${tamanhoClasses} rounded-lg overflow-hidden border border-white/5 shrink-0"><img src="${src}" class="w-full h-full object-cover" alt="Capa"></div>`;
+    }
+    return `<div class="${tamanhoClasses} rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 border border-white/5 shrink-0"><i class="fas ${iconeClasses}"></i></div>`;
+}
+
+// Atualiza a miniatura do rodapé (mostra a capa da música atual, ou o ícone padrão)
+function atualizarCapaRodape(track) {
+    const img = document.getElementById('current-thumb-img');
+    const icon = document.getElementById('current-icon');
+    if (!img || !icon) return;
+    const src = track ? (track.capaDataUrl || track.capaUrlOnline) : null;
+    if (src) {
+        img.src = src;
+        img.classList.remove('hidden');
+        icon.classList.add('hidden');
+    } else {
+        img.classList.add('hidden');
+        icon.classList.remove('hidden');
+    }
 }
 
 function renderPlaylist() {
@@ -130,9 +252,7 @@ function renderPlaylist() {
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="track-click-${index}">
-                <div class="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 border border-white/5">
-                    <i class="fas ${isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music'}"></i>
-                </div>
+                ${renderCapaHtml(track, 'w-12 h-12', isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music')}
                 <div class="min-w-0 flex-1">
                     <h4 class="text-sm font-medium ${isCurrent ? 'text-[#1db954]' : 'text-gray-200'} truncate pr-2">${titulo}</h4>
                     <p class="text-xs text-gray-400 truncate mt-0.5">${artista}</p>
@@ -174,6 +294,7 @@ function playTrack(index, options = {}) {
 
     document.getElementById('current-title').innerText = titulo;
     document.getElementById('current-channel').innerText = artista;
+    atualizarCapaRodape(track);
 
     if (audioPlayer.src) { URL.revokeObjectURL(audioPlayer.src); } 
     audioPlayer.src = URL.createObjectURL(track.file);
@@ -188,6 +309,7 @@ function playTrack(index, options = {}) {
             isPlaying = true;
             document.getElementById('play-icon').className = "fas fa-pause text-lg";
             document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
+            atualizarCapaRodape(track); // reaplica a capa, já que a linha acima reseta as classes do ícone
             startProgress();
             atualizarMediaSession(titulo, artista);
             if (currentView === 'tracks') renderPlaylist();
@@ -283,6 +405,7 @@ function carregarFaixaParaRestaurar(index, listaAlvo, view, tempoSalvo) {
 
     document.getElementById('current-title').innerText = titulo;
     document.getElementById('current-channel').innerText = artista;
+    atualizarCapaRodape(track);
 
     if (audioPlayer.src) { URL.revokeObjectURL(audioPlayer.src); }
     audioPlayer.src = URL.createObjectURL(track.file);
@@ -448,6 +571,7 @@ function resetPlayerVisuals() {
     document.getElementById('current-channel').innerText = "-";
     document.getElementById('play-icon').className = "fas fa-play text-lg ml-0.5";
     document.getElementById('current-icon').className = "fas fa-music text-gray-400 text-lg";
+    atualizarCapaRodape(null);
     document.getElementById('progress-bar').value = 0;
     document.getElementById('current-time').innerText = "0:00";
     document.getElementById('total-duration').innerText = "0:00";
@@ -567,9 +691,7 @@ function renderTracksOfPlaylist() {
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="p-track-${index}">
-                <div class="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 text-xs">
-                    <i class="fas ${isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music'}"></i>
-                </div>
+                ${renderCapaHtml(track, 'w-10 h-10', isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music')}
                 <div class="min-w-0 flex-1">
                     <h4 class="text-sm font-medium ${isCurrent ? 'text-[#1db954]' : 'text-gray-200'} truncate">${titulo}</h4>
                     <p class="text-xs text-gray-400 truncate">${artista}</p>
@@ -668,6 +790,10 @@ document.getElementById('create-playlist-btn').addEventListener('click', () => {
 // INTERAÇÃO DE ARQUIVOS UPSTREAM
 document.getElementById('toggle-add-btn').addEventListener('click', () => {
     document.getElementById('add-music-form').classList.toggle('hidden');
+});
+
+document.getElementById('refresh-covers-btn').addEventListener('click', () => {
+    buscarCapasFaltantes(true);
 });
 
 document.getElementById('audio-files').addEventListener('change', (e) => {
@@ -772,4 +898,5 @@ document.getElementById('play-btn').addEventListener('click', () => {
         document.getElementById('play-icon').className = "fas fa-pause text-lg";
         document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
     }
+    atualizarCapaRodape(listaAlvo[currentTrackIndex]); // reaplica a capa, já que as linhas acima resetam as classes do ícone
 });
