@@ -47,6 +47,12 @@
             <button id="tab-playlists" class="text-gray-400 pb-1 px-1 hover:text-white">Playlists</button>
         </div>
 
+        <div id="search-container" class="relative">
+            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs"></i>
+            <input type="text" id="search-input" placeholder="Buscar música ou artista..."
+                   class="w-full bg-[#141414] border border-[#282828] rounded-full py-2 pl-9 pr-4 text-sm text-white placeholder-gray-500 outline-none focus:border-[#1db954]">
+        </div>
+
         <div id="add-music-form" class="hidden space-y-2 mt-3 bg-[#141414] p-3 rounded-xl border border-[#282828]">
             <label class="block w-full text-center bg-[#242424] hover:bg-[#2a2a2a] text-gray-300 text-sm py-4 px-4 rounded-lg border border-dashed border-gray-600 cursor-pointer transition-colors">
                 <i class="fas fa-cloud-upload-alt mr-2 text-[#1db954] text-lg"></i> Escolher arquivos .opus / .mp3
