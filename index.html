@@ -36,6 +36,9 @@
                 <button id="create-playlist-btn" class="hidden bg-[#242424] hover:bg-[#2a2a2a] text-[#1db954] font-bold text-xs px-3 py-1.5 rounded-full uppercase tracking-wider">
                     <i class="fas fa-folder-plus mr-1"></i> Criar Playlist
                 </button>
+                <button id="refresh-covers-btn" class="bg-[#242424] hover:bg-[#2a2a2a] text-gray-300 text-xs px-3 py-1.5 rounded-full uppercase tracking-wider" title="Buscar capas que ainda faltam">
+                    <i class="fas fa-image"></i>
+                </button>
                 <button id="toggle-add-btn" class="bg-[#1db954] text-black font-bold text-xs px-3 py-1.5 rounded-full uppercase tracking-wider">
                     <i class="fas fa-plus mr-1"></i> Nova Música
                 </button>
@@ -72,7 +75,8 @@
     <footer class="fixed bottom-0 left-0 right-0 glass-player border-t border-[#282828]/50 p-4 pb-6 flex flex-col gap-3 z-20 rounded-t-2xl">
         <div class="flex items-center justify-between gap-4">
             <div class="flex items-center gap-3 min-w-0 flex-1">
-                <div id="current-thumb-container" class="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center border border-white/5 shadow-lg">
+                <div id="current-thumb-container" class="relative w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center border border-white/5 shadow-lg overflow-hidden">
+                    <img id="current-thumb-img" class="hidden absolute inset-0 w-full h-full object-cover" alt="Capa do álbum">
                     <i class="fas fa-music text-gray-400 text-lg" id="current-icon"></i>
                 </div>
                 <div class="min-w-0 flex-1">
