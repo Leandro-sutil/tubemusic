@@ -53,7 +53,6 @@ function carregarPlaylist() {
         MINHA_PLAYLIST = ordenarPorTitulo(getAll.result);
         if (currentView === 'tracks') renderPlaylist();
         tentarRestaurarEstado();
-        buscarCapasFaltantes();
     };
 }
 
@@ -91,125 +90,230 @@ function ordenarPorTitulo(lista) {
     });
 }
 
-// --- CAPAS DE ÁLBUM (identificação automática via API pública do iTunes) ---
-// A API do iTunes não exige chave e é gratuita para uso como este.
-// Ela funciona melhor quando o arquivo segue o padrão "Artista - Título.mp3".
-async function buscarCapaNaAPI(artista, titulo) {
-    const tentativas = [];
-    if (artista && artista !== 'Desconhecido') tentativas.push(`${artista} ${titulo}`);
-    tentativas.push(titulo);
+// ============================================================================
+// CAPAS DE ÁLBUM — extraídas diretamente do arquivo de áudio, sem internet.
+// .mp3 usa tags ID3v2 (lidas pela biblioteca jsmediatags).
+// .opus/.ogg guardam a capa num comentário Vorbis "METADATA_BLOCK_PICTURE"
+// (um bloco de imagem no formato do FLAC, em base64), que é lido manualmente
+// abaixo já que não existe uma biblioteca pronta e leve para isso.
+// ============================================================================
 
-    for (const termo of tentativas) {
-        try {
-            const url = `https://itunes.apple.com/search?term=${encodeURIComponent(termo)}&media=music&entity=song&limit=1`;
-            const resp = await fetch(url);
-            if (!resp.ok) continue;
-            const data = await resp.json();
-            if (data.results && data.results.length > 0 && data.results[0].artworkUrl100) {
-                // A API devolve uma miniatura pequena (100x100); trocamos para uma versão maior
-                return data.results[0].artworkUrl100.replace('100x100bb', '600x600bb');
-            }
-        } catch (e) {
-            console.warn('Falha ao consultar a API do iTunes para capa:', e);
-        }
-    }
-    return null;
+// capaCache: track.id -> URL do objeto (string) quando há capa, ou null quando já
+// verificamos e não encontramos nenhuma capa embutida no arquivo.
+const capaCache = new Map();
+
+function extrairCapaID3(file) {
+    return new Promise((resolve) => {
+        if (typeof jsmediatags === 'undefined') { resolve(null); return; }
+        new jsmediatags.Reader(file)
+            .setTagsToRead(['picture'])
+            .read({
+                onSuccess: (tag) => {
+                    const picture = tag.tags && tag.tags.picture;
+                    if (!picture || !picture.data) { resolve(null); return; }
+                    try {
+                        const bytes = new Uint8Array(picture.data);
+                        const blob = new Blob([bytes], { type: picture.format || 'image/jpeg' });
+                        resolve(URL.createObjectURL(blob));
+                    } catch (e) {
+                        resolve(null);
+                    }
+                },
+                onError: () => resolve(null)
+            });
+    });
 }
 
-// Baixa os bytes da imagem e converte para base64 (data URL), para guardar a
-// capa dentro do IndexedDB e o app conseguir mostrá-la mesmo offline depois.
-async function baixarCapaComoDataUrl(artworkUrl) {
+// Reconstrói os "pacotes" lógicos do container Ogg a partir das páginas físicas
+// (um pacote pode estar espalhado por várias páginas quando é grande, como
+// acontece quando há uma capa embutida no cabeçalho de comentários).
+function extrairPacotesOgg(bytes, quantidadeDesejada) {
+    const pacotes = [];
+    let offset = 0;
+    let pacoteEmMontagem = null;
+
+    while (offset + 27 <= bytes.length && pacotes.length < quantidadeDesejada) {
+        if (!(bytes[offset] === 0x4f && bytes[offset + 1] === 0x67 && bytes[offset + 2] === 0x67 && bytes[offset + 3] === 0x53)) {
+            break; // não é o início de uma página Ogg válida ("OggS")
+        }
+        const pageSegments = bytes[offset + 26];
+        const tabelaInicio = offset + 27;
+        if (tabelaInicio + pageSegments > bytes.length) break;
+        const tabelaSegmentos = bytes.slice(tabelaInicio, tabelaInicio + pageSegments);
+        let posicaoDados = tabelaInicio + pageSegments;
+
+        let i = 0;
+        while (i < tabelaSegmentos.length) {
+            let tamanhoPacote = 0;
+            let tamanhoSegmento;
+            do {
+                tamanhoSegmento = tabelaSegmentos[i];
+                tamanhoPacote += tamanhoSegmento;
+                i++;
+            } while (tamanhoSegmento === 255 && i < tabelaSegmentos.length);
+
+            if (posicaoDados + tamanhoPacote > bytes.length) { posicaoDados = bytes.length; break; }
+            const pedaco = bytes.slice(posicaoDados, posicaoDados + tamanhoPacote);
+            posicaoDados += tamanhoPacote;
+
+            if (pacoteEmMontagem) {
+                pacoteEmMontagem.push(pedaco);
+            } else {
+                pacoteEmMontagem = [pedaco];
+            }
+
+            const terminaNoFimDaPagina = (i === tabelaSegmentos.length);
+            const ultimoSegmentoEra255 = (tamanhoSegmento === 255);
+
+            // Se a página terminou bem no meio de um pacote (último segmento = 255),
+            // o pacote continua na próxima página; caso contrário está completo.
+            if (!(ultimoSegmentoEra255 && terminaNoFimDaPagina)) {
+                const total = pacoteEmMontagem.reduce((soma, p) => soma + p.length, 0);
+                const completo = new Uint8Array(total);
+                let pos = 0;
+                for (const p of pacoteEmMontagem) { completo.set(p, pos); pos += p.length; }
+                pacotes.push(completo);
+                pacoteEmMontagem = null;
+                if (pacotes.length >= quantidadeDesejada) break;
+            }
+        }
+
+        offset = posicaoDados;
+    }
+
+    return pacotes;
+}
+
+// Lê os comentários de um pacote "OpusTags" (Opus) ou de cabeçalho de comentário Vorbis (.ogg)
+function lerComentariosVorbis(packet) {
+    let offset;
+    const decoderAscii = new TextDecoder('ascii');
+    const inicioOpus = decoderAscii.decode(packet.slice(0, 8));
+    if (inicioOpus === 'OpusTags') {
+        offset = 8;
+    } else if (packet[0] === 0x03 && decoderAscii.decode(packet.slice(1, 7)) === 'vorbis') {
+        offset = 7;
+    } else {
+        return null; // não é um pacote de tags Opus/Vorbis reconhecido
+    }
+
+    const dv = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+    const vendorLen = dv.getUint32(offset, true); offset += 4 + vendorLen;
+    if (offset + 4 > packet.length) return null;
+    const commentCount = dv.getUint32(offset, true); offset += 4;
+
+    const comentarios = [];
+    for (let i = 0; i < commentCount; i++) {
+        if (offset + 4 > packet.length) break;
+        const len = dv.getUint32(offset, true); offset += 4;
+        comentarios.push(packet.slice(offset, offset + len));
+        offset += len;
+    }
+    return comentarios;
+}
+
+function base64ParaBytes(base64) {
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+    return bytes;
+}
+
+// Decodifica um bloco de imagem no formato do FLAC (mesma estrutura usada no METADATA_BLOCK_PICTURE)
+function lerBlocoImagemFlac(bytes) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let offset = 4; // tipo da imagem (ignorado)
+    const mimeLen = dv.getUint32(offset, false); offset += 4;
+    const mime = new TextDecoder('utf-8').decode(bytes.slice(offset, offset + mimeLen)); offset += mimeLen;
+    const descLen = dv.getUint32(offset, false); offset += 4 + descLen;
+    offset += 4 + 4 + 4 + 4; // largura, altura, profundidade de cor, nº de cores indexadas
+    const dataLen = dv.getUint32(offset, false); offset += 4;
+    const data = bytes.slice(offset, offset + dataLen);
+    return { mime, data };
+}
+
+async function extrairCapaOgg(file) {
     try {
-        const resp = await fetch(artworkUrl);
-        if (!resp.ok) return null;
-        const blob = await resp.blob();
-        return await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-        });
+        // Os cabeçalhos + a capa embutida cabem tranquilamente nos primeiros MBs do arquivo;
+        // não é preciso ler a música inteira só para achar a imagem.
+        const tamanhoLeitura = Math.min(file.size, 8 * 1024 * 1024);
+        const buffer = await file.slice(0, tamanhoLeitura).arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+
+        const pacotes = extrairPacotesOgg(bytes, 2);
+        if (pacotes.length < 2) return null;
+
+        const comentarios = lerComentariosVorbis(pacotes[1]);
+        if (!comentarios) return null;
+
+        const decoder = new TextDecoder('utf-8');
+        const prefixo = 'METADATA_BLOCK_PICTURE=';
+        for (const comentarioBytes of comentarios) {
+            const texto = decoder.decode(comentarioBytes);
+            if (texto.toUpperCase().startsWith(prefixo)) {
+                const imagem = lerBlocoImagemFlac(base64ParaBytes(texto.slice(prefixo.length)));
+                const blob = new Blob([imagem.data], { type: imagem.mime || 'image/jpeg' });
+                return URL.createObjectURL(blob);
+            }
+        }
+        return null;
     } catch (e) {
-        // Se a CDN de imagens não permitir baixar os bytes (CORS), ainda
-        // conseguimos mostrar a capa via URL direta quando estiver online.
-        console.warn('Não foi possível baixar os bytes da capa (a exibição online ainda deve funcionar):', e);
+        console.warn('Não foi possível extrair a capa deste arquivo .ogg/.opus:', e);
         return null;
     }
 }
 
-let buscandoCapas = false;
-function atualizarBotaoCapas(carregando) {
-    const btn = document.getElementById('refresh-covers-btn');
-    if (!btn) return;
-    btn.querySelector('i').className = carregando ? 'fas fa-spinner fa-spin' : 'fas fa-image';
-    btn.disabled = carregando;
-}
+// Ponto único de entrada: decide o método certo pela extensão do arquivo e usa cache
+function obterCapa(track) {
+    if (capaCache.has(track.id)) return Promise.resolve(capaCache.get(track.id));
 
-// Processa, uma de cada vez (com pequena pausa entre elas), as músicas que
-// ainda não têm capa identificada. forcar=true também tenta de novo as que
-// falharam antes (útil para tentar novamente depois de ficar online).
-async function buscarCapasFaltantes(forcar = false) {
-    if (buscandoCapas || !db) return;
-    buscandoCapas = true;
-    atualizarBotaoCapas(true);
-
-    const faltando = MINHA_PLAYLIST.filter(t => forcar ? (!t.capaDataUrl && !t.capaUrlOnline) : !t.capaTentada);
-
-    for (const track of faltando) {
-        const { artista, titulo } = parseTrackInfo(track);
-        const artworkUrl = await buscarCapaNaAPI(artista, titulo);
-        let capaDataUrl = null;
-        if (artworkUrl) capaDataUrl = await baixarCapaComoDataUrl(artworkUrl);
-
-        const atualizado = {
-            ...track,
-            capaTentada: true,
-            capaDataUrl: capaDataUrl || (forcar ? track.capaDataUrl : null) || null,
-            capaUrlOnline: capaDataUrl ? null : (artworkUrl || track.capaUrlOnline || null)
-        };
-
-        await new Promise((resolve) => {
-            const transaction = db.transaction(['musicas'], 'readwrite');
-            transaction.objectStore('musicas').put(atualizado);
-            transaction.oncomplete = resolve;
-            transaction.onerror = resolve;
-        });
-
-        const idx = MINHA_PLAYLIST.findIndex(t => t.id === track.id);
-        if (idx !== -1) MINHA_PLAYLIST[idx] = atualizado;
-        if (currentTrackIndex === idx) atualizarCapaRodape(atualizado);
-        if (currentView === 'tracks') renderPlaylist();
-
-        await new Promise(r => setTimeout(r, 300)); // evita bater na API rápido demais
-    }
-
-    buscandoCapas = false;
-    atualizarBotaoCapas(false);
-}
-
-// Gera o HTML da miniatura (capa se existir, ou o ícone padrão de nota musical)
-function renderCapaHtml(track, tamanhoClasses, iconeClasses) {
-    const src = track.capaDataUrl || track.capaUrlOnline;
-    if (src) {
-        return `<div class="${tamanhoClasses} rounded-lg overflow-hidden border border-white/5 shrink-0"><img src="${src}" class="w-full h-full object-cover" alt="Capa"></div>`;
-    }
-    return `<div class="${tamanhoClasses} rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 border border-white/5 shrink-0"><i class="fas ${iconeClasses}"></i></div>`;
-}
-
-// Atualiza a miniatura do rodapé (mostra a capa da música atual, ou o ícone padrão)
-function atualizarCapaRodape(track) {
-    const img = document.getElementById('current-thumb-img');
-    const icon = document.getElementById('current-icon');
-    if (!img || !icon) return;
-    const src = track ? (track.capaDataUrl || track.capaUrlOnline) : null;
-    if (src) {
-        img.src = src;
-        img.classList.remove('hidden');
-        icon.classList.add('hidden');
+    const nome = (track.name || '').toLowerCase();
+    let promessa;
+    if (nome.endsWith('.mp3')) {
+        promessa = extrairCapaID3(track.file);
+    } else if (nome.endsWith('.ogg') || nome.endsWith('.opus')) {
+        promessa = extrairCapaOgg(track.file);
     } else {
-        img.classList.add('hidden');
-        icon.classList.remove('hidden');
+        promessa = Promise.resolve(null);
     }
+
+    return promessa
+        .then((url) => { capaCache.set(track.id, url); return url; })
+        .catch(() => { capaCache.set(track.id, null); return null; });
+}
+
+// Depois de inserir a miniatura padrão (ícone) na tela, tenta carregar a capa real em
+// segundo plano e substitui o ícone pela imagem quando (e se) ela for encontrada.
+function iniciarCarregamentoCapa(track, elementId) {
+    obterCapa(track).then((url) => {
+        if (!url) return;
+        const el = document.getElementById(elementId);
+        if (!el) return; // a lista pode ter sido re-renderizada/filtrada nesse meio tempo
+        el.innerHTML = `<img src="${url}" class="w-full h-full object-cover" alt="Capa do álbum">`;
+    });
+}
+
+// Atualiza a capa mostrada no rodapé (player), cancelando resultados desatualizados
+// caso o usuário troque de música antes da extração terminar.
+let tokenCapaAtual = 0;
+function atualizarCapaRodape(track) {
+    const meuToken = ++tokenCapaAtual;
+    const img = document.getElementById('current-thumb-img');
+    img.classList.add('hidden');
+
+    const capaExistente = capaCache.get(track.id);
+    if (capaExistente) {
+        img.src = capaExistente;
+        img.classList.remove('hidden');
+        return;
+    }
+    if (capaExistente === null) return; // já sabemos que esta faixa não tem capa
+
+    obterCapa(track).then((url) => {
+        if (meuToken !== tokenCapaAtual || !url) return; // música já trocou, ou não achou capa
+        img.src = url;
+        img.classList.remove('hidden');
+    });
 }
 
 function renderPlaylist() {
@@ -247,12 +351,16 @@ function renderPlaylist() {
         const isCurrent = index === currentTrackIndex && currentView === 'tracks';
         const div = document.createElement('div');
         div.className = `flex items-center justify-between p-3 rounded-xl transition shadow-sm ${isCurrent ? 'bg-[#1db954]/20 border border-[#1db954]' : 'bg-[#141414] border border-[#1f1f1f]'}`;
-        
+
         const { artista, titulo } = parseTrackInfo(track);
+        const capaExistente = capaCache.get(track.id);
+        const thumbId = `thumb-${track.id}`;
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="track-click-${index}">
-                ${renderCapaHtml(track, 'w-12 h-12', isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music')}
+                <div class="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 border border-white/5 overflow-hidden" id="${thumbId}">
+                    ${capaExistente ? `<img src="${capaExistente}" class="w-full h-full object-cover" alt="Capa do álbum">` : `<i class="fas ${isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music'}"></i>`}
+                </div>
                 <div class="min-w-0 flex-1">
                     <h4 class="text-sm font-medium ${isCurrent ? 'text-[#1db954]' : 'text-gray-200'} truncate pr-2">${titulo}</h4>
                     <p class="text-xs text-gray-400 truncate mt-0.5">${artista}</p>
@@ -272,6 +380,8 @@ function renderPlaylist() {
         document.getElementById(`track-click-${index}`).onclick = () => { currentView = 'tracks'; playTrack(index); };
         document.getElementById(`add-to-p-${index}`).onclick = (e) => { e.stopPropagation(); promptAdicionarMusicaPlaylist(track); };
         document.getElementById(`del-track-${track.id}`).onclick = (e) => deleteTrack(track.id, e);
+
+        if (capaExistente === undefined) iniciarCarregamentoCapa(track, thumbId);
     });
 }
 
@@ -309,7 +419,6 @@ function playTrack(index, options = {}) {
             isPlaying = true;
             document.getElementById('play-icon').className = "fas fa-pause text-lg";
             document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
-            atualizarCapaRodape(track); // reaplica a capa, já que a linha acima reseta as classes do ícone
             startProgress();
             atualizarMediaSession(titulo, artista);
             if (currentView === 'tracks') renderPlaylist();
@@ -571,7 +680,7 @@ function resetPlayerVisuals() {
     document.getElementById('current-channel').innerText = "-";
     document.getElementById('play-icon').className = "fas fa-play text-lg ml-0.5";
     document.getElementById('current-icon').className = "fas fa-music text-gray-400 text-lg";
-    atualizarCapaRodape(null);
+    document.getElementById('current-thumb-img').classList.add('hidden');
     document.getElementById('progress-bar').value = 0;
     document.getElementById('current-time').innerText = "0:00";
     document.getElementById('total-duration').innerText = "0:00";
@@ -686,12 +795,16 @@ function renderTracksOfPlaylist() {
         const isCurrent = index === currentTrackIndex && currentView === 'inside_playlist';
         const div = document.createElement('div');
         div.className = `flex items-center justify-between p-3 rounded-xl transition ${isCurrent ? 'bg-[#1db954]/20 border border-[#1db954]' : 'bg-[#141414] border border-[#1f1f1f]'}`;
-        
+
         const { artista, titulo } = parseTrackInfo(track);
+        const capaExistente = capaCache.get(track.id);
+        const thumbId = `pthumb-${track.id}`;
 
         div.innerHTML = `
             <div class="flex items-center gap-3 min-w-0 flex-1 cursor-pointer" id="p-track-${index}">
-                ${renderCapaHtml(track, 'w-10 h-10', isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music')}
+                <div class="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-gray-400 text-xs overflow-hidden" id="${thumbId}">
+                    ${capaExistente ? `<img src="${capaExistente}" class="w-full h-full object-cover" alt="Capa do álbum">` : `<i class="fas ${isCurrent && isPlaying ? 'fa-volume-up text-[#1db954]' : 'fa-music'}"></i>`}
+                </div>
                 <div class="min-w-0 flex-1">
                     <h4 class="text-sm font-medium ${isCurrent ? 'text-[#1db954]' : 'text-gray-200'} truncate">${titulo}</h4>
                     <p class="text-xs text-gray-400 truncate">${artista}</p>
@@ -703,6 +816,8 @@ function renderTracksOfPlaylist() {
 
         document.getElementById(`p-track-${index}`).onclick = () => { currentView = 'inside_playlist'; playTrack(index); };
         document.getElementById(`p-remove-${index}`).onclick = (e) => { e.stopPropagation(); removerMusicaDaPlaylist(index); };
+
+        if (capaExistente === undefined) iniciarCarregamentoCapa(track, thumbId);
     });
 }
 
@@ -790,10 +905,6 @@ document.getElementById('create-playlist-btn').addEventListener('click', () => {
 // INTERAÇÃO DE ARQUIVOS UPSTREAM
 document.getElementById('toggle-add-btn').addEventListener('click', () => {
     document.getElementById('add-music-form').classList.toggle('hidden');
-});
-
-document.getElementById('refresh-covers-btn').addEventListener('click', () => {
-    buscarCapasFaltantes(true);
 });
 
 document.getElementById('audio-files').addEventListener('change', (e) => {
@@ -898,5 +1009,4 @@ document.getElementById('play-btn').addEventListener('click', () => {
         document.getElementById('play-icon').className = "fas fa-pause text-lg";
         document.getElementById('current-icon').className = "fas fa-compact-disc fa-spin text-[#1db954] text-lg";
     }
-    atualizarCapaRodape(listaAlvo[currentTrackIndex]); // reaplica a capa, já que as linhas acima resetam as classes do ícone
 });
